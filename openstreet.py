@@ -128,10 +128,10 @@ def highlight_differences_on_map(map_object: folium.Map, close_pois: list[tuple[
 
     return map_object
 
-# POIの中心地点を地図上に表示する関数
-def create_poi_center_map(poi: dict) -> px.scatter_mapbox:
+# POIの中心地点を地図上に表示する関数、zoomは17か18を推奨、17は周辺300m程度、18は周辺50m程度が描写される
+def create_poi_center_map(poi: dict, zoom=18) -> px.scatter_mapbox:
     df: pd.DataFrame = pd.DataFrame([poi], columns=['lat', 'lon'])
-    fig: px.scatter_mapbox = px.scatter_mapbox(df, lat='lat', lon='lon', zoom=18, height=1200)
+    fig: px.scatter_mapbox = px.scatter_mapbox(df, lat='lat', lon='lon', zoom=zoom, height=1200)
     fig.update_layout(mapbox_style="open-street-map")
     return fig
 
@@ -199,8 +199,8 @@ for idx, (poi1, poi2, _) in enumerate(close_pois, start=1):
     name1 = poi1.get('name', 'unknown').replace(' ', '_')
     name2 = poi2.get('name', 'unknown').replace(' ', '_')
 
-    fig1 = create_poi_center_map(poi1)
-    fig2 = create_poi_center_map(poi2)
+    fig1 = create_poi_center_map(poi1, zoom=18)
+    fig2 = create_poi_center_map(poi2, zoom=18)
 
     fig1.write_image(f"pairs/{idx}-1_{name1}.png", width=1600, height=1200)
     fig2.write_image(f"pairs/{idx}-2_{name2}.png", width=1600, height=1200)
