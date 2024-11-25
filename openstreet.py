@@ -8,12 +8,16 @@ import base64
 import re
 from dotenv import load_dotenv
 from openai import OpenAI
+from PIL import Image
+from io import BytesIO
 
 load_dotenv()
 
 # OpenAI APIキーを設定
-api_key: str = os.getenv("OPENAI_API_KEY")
-client = OpenAI(api_key=api_key)
+openai_api_key: str = os.getenv("OPENAI_API_KEY")
+google_api_key = os.getenv("GOOGLE_API_KEY")
+client = OpenAI(api_key=openai_api_key)
+
 
 # 特定の地域の類似したPOIの一覧を取得する関数
 def get_amenity_pois(bbox: str, amenity: str) -> dict:
@@ -86,7 +90,7 @@ def ask_openai_question(image_path1: str, image_path2: str, question: str) -> di
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": f"{image_name1}と{image_name2}という2つのカフェの場所について、これらについての地図画像を見て、地図上の違いを教えてください。"},
+                    {"type": "text", "text": question.format(image_name1, image_name2)},
                     {
                         "type": "image_url",
                         "image_url": {
@@ -131,38 +135,66 @@ def create_poi_center_map(poi: dict) -> px.scatter_mapbox:
     fig.update_layout(mapbox_style="open-street-map")
     return fig
 
+def make_poi_data(data: dict) -> list[dict]:
+    poi_data: list[dict] = []
+    for p in data['elements']:
+        poi: dict = {'id': p['id'], 'lat': p['lat'], 'lon': p['lon']}
+        if 'tags' in p:
+            if 'name' in p['tags']:
+                poi['name'] = p['tags']['name']
+            if 'amenity' in p['tags']:
+                poi['amenity'] = p['tags']['amenity']
+        poi_data.append(poi)
+    return poi_data
+
+# Google Street View APIを使用してストリートビュー画像を取得する関数
+def get_street_view_image(lat: float, lon: float, heading: int = 0, pitch: int = 10, fov: int = 120) -> bytes:
+    base_url = "https://maps.googleapis.com/maps/api/streetview"
+    params = {
+        "size": "640x480",  # 画像サイズ
+        "location": f"{lat},{lon}",
+        "heading": heading,
+        "pitch": pitch,
+        "fov": fov,
+        "source": "outdoor",
+        "key": google_api_key
+    }
+    response = requests.get(base_url, params=params)
+    return response.content
 #%%
+# 画像を指定したDPIとサイズで保存する関数
+def save_image_with_dpi(image_data: bytes, file_path: str, dpi: int = 600, size: tuple = (2048, 1024)):
+    image = Image.open(BytesIO(image_data))
+    #image = image.resize(size)
+    image.save(file_path, format='PNG', dpi=(dpi, dpi))
+
+
+#%%
+
+
 # 使用例
 center_lat = 35.6586  # 中心地点の緯度
 center_lon = 139.7454  # 中心地点の経度
-bbox = create_bbox(center_lat, center_lon)
+bbox = create_bbox(center_lat, center_lon, distance=0.005) #中心地点を中心としたバウンディングボックスを生成 0.005度（約1kmの四角形）　0.01度で約2km
 
-amenity: str = "cafe"
+amenity: str = "cafe" # カフェを検索 現在はamenity属性のみ対応
 threshold: float = 50  # 200m以内にあるPOIを抽出
 
+# 指定されたバウンディングボックス内の指定されたamenityのPOIを取得
 data: dict = get_amenity_pois(bbox, amenity)
-#%%
-poi_data: list[dict] = []
-for p in data['elements']:
-    poi: dict = {'id': p['id'], 'lat': p['lat'], 'lon': p['lon']}
-    if 'tags' in p:
-        if 'name' in p['tags']:
-            poi['name'] = p['tags']['name']
-        if 'amenity' in p['tags']:
-            poi['amenity'] = p['tags']['amenity']
-    poi_data.append(poi)
-
-
-
+# 処理しやすい形式に変換
+poi_data: list[dict] = make_poi_data(data)
+# しきい値以下の距離にあるPOIのペアを抽出
 close_pois: list[tuple[dict, dict, float]] = filter_pois_by_distance(poi_data, threshold)
 
+# 地図上にPOIを表示
 map_object = create_map(poi_data)
 highlightmap = highlight_differences_on_map(map_object, close_pois)
-
+# 地図を保存
 highlightmap.save('TokyoTower.html')
 #%%
+# Close POI pairsについて、それぞれのPOIを地図上に表示してPNG画像として保存、現在はpairsディレクトリに保存
 os.makedirs('pairs', exist_ok=True)
-# Close POI pairsについて、それぞれのPOIを地図上に表示してPNG画像として保存
 for idx, (poi1, poi2, _) in enumerate(close_pois, start=1):
     name1 = poi1.get('name', 'unknown').replace(' ', '_')
     name2 = poi2.get('name', 'unknown').replace(' ', '_')
@@ -173,11 +205,26 @@ for idx, (poi1, poi2, _) in enumerate(close_pois, start=1):
     fig1.write_image(f"pairs/{idx}-1_{name1}.png", width=1600, height=1200)
     fig2.write_image(f"pairs/{idx}-2_{name2}.png", width=1600, height=1200)
 #%%
+# 2つの画像をOpenAI APIに送信して質問を行う
 image_path1 = "pairs/1-1_カフェ・ベローチェ.png"
 image_path2 = "pairs/1-2_宮越屋珈琲.png"
+prompt = "{image_name1}と{image_name2}という2つのカフェの場所について、これらについての地図画像を見て、地図上の違いを教えてください。"
 
-response: dict = ask_openai_question(image_path1, image_path2, "What are the differences between these two cafes?")
+response: dict = ask_openai_question(image_path1, image_path2, prompt)
+
+# OpenAI APIの応答を表示
+print(response.choices[0].message.content)
 
 #%%
-print(response.choices[0].message.content)
-#bbox = "35.6586,139.7454,35.6895,139.7690"# 東京タワー周辺のバウンディングボックス
+# 2つの画像をGoogle Street View APIを使用して取得
+os.makedirs('streetview_images', exist_ok=True)
+for idx, (poi1, poi2, _) in enumerate(close_pois, start=1):
+    lat1, lon1 = poi1['lat'], poi1['lon']
+    lat2, lon2 = poi2['lat'], poi2['lon']
+
+    image1 = get_street_view_image(lat1, lon1)
+    image2 = get_street_view_image(lat2, lon2)
+
+    save_image_with_dpi(image1, f"streetview_images/{idx}_1_{poi1['name']}.png", dpi=600)
+    save_image_with_dpi(image2, f"streetview_images/{idx}_2_{poi2['name']}.png", dpi=600)
+
